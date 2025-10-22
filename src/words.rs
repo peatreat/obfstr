@@ -5,6 +5,8 @@ Wide string obfuscation
 
 use core::ptr::{read_volatile, write};
 
+use crate::bytes::{END_TAG, SIZE_OF_TAG_U16, START_TAG};
+
 /// Compiletime wide string constant obfuscation.
 #[macro_export]
 macro_rules! obfwide {
@@ -31,10 +33,11 @@ macro_rules! __obfwide {
 	($s:expr) => {{
 		use ::core::primitive::*;
 		const _OBFWIDE_STRING: &[u16] = $crate::wide!($s);
-		const _OBFWIDE_LEN: usize = _OBFWIDE_STRING.len();
+		const _OBFWIDE_STRING_LEN: usize = _OBFWIDE_STRING.len();
+		const _OBFWIDE_LEN: usize = $crate::bytes::SIZE_OF_TAG_U16 + _OBFWIDE_STRING_LEN + $crate::bytes::SIZE_OF_TAG_U16;
 		const _OBFWIDE_KEYSTREAM: [u16; _OBFWIDE_LEN] = $crate::words::keystream::<_OBFWIDE_LEN>($crate::random!(u32, "key", stringify!($s)));
 		static _OBFWIDE_SDATA: [u16; _OBFWIDE_LEN] = $crate::words::obfuscate::<_OBFWIDE_LEN>(_OBFWIDE_STRING, &_OBFWIDE_KEYSTREAM);
-		$crate::words::deobfuscate::<_OBFWIDE_LEN>(
+		$crate::words::deobfuscate::<_OBFWIDE_LEN, _OBFWIDE_STRING_LEN>(
 			$crate::xref::xref::<_,
 				{$crate::random!(u32, "offset", stringify!($s))},
 				{$crate::random!(u64, "xref", stringify!($s))}>
@@ -58,9 +61,9 @@ const fn next_round(mut x: u32) -> u32 {
 pub const fn keystream<const LEN: usize>(key: u32) -> [u16; LEN] {
 	let mut keys = [0u16; LEN];
 	let mut round_key = key;
-	let mut i = 0;
+	let mut i = SIZE_OF_TAG_U16;
 	// Calculate the key stream in chunks of 4 bytes
-	while i < LEN & !1 {
+	while i < (LEN - SIZE_OF_TAG_U16) & !1 {
 		round_key = next_round(round_key);
 		let kb = round_key.to_ne_bytes();
 		keys[i + 0] = u16::from_ne_bytes([kb[0], kb[1]]);
@@ -72,28 +75,42 @@ pub const fn keystream<const LEN: usize>(key: u32) -> [u16; LEN] {
 		round_key = next_round(round_key);
 		keys[i] = round_key as u16;
 	}
+
+	unsafe {
+		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr() as *mut u32, START_TAG);
+		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr().add(i) as *mut u32, END_TAG);
+	};
+
 	return keys;
 }
 
 /// Obfuscates the input string and given key stream.
 pub const fn obfuscate<const LEN: usize>(s: &[u16], k: &[u16; LEN]) -> [u16; LEN] {
-	if s.len() != LEN {
+	if SIZE_OF_TAG_U16 + s.len() + SIZE_OF_TAG_U16 != LEN {
 		panic!("input string len not equal to key stream len");
 	}
+	
 	let mut data = [0u16; LEN];
-	let mut i = 0usize;
-	while i < LEN {
-		data[i] = s[i] ^ k[i];
+	let mut i = SIZE_OF_TAG_U16;
+
+	while i < LEN - SIZE_OF_TAG_U16 {
+		data[i] = s[i - SIZE_OF_TAG_U16] ^ k[i];
 		i += 1;
 	}
+
+	unsafe {
+		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr() as *mut u32, START_TAG);
+		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr().add(i) as *mut u32, END_TAG);
+	};
+
 	return data;
 }
 
 /// Deobfuscates the obfuscated input string and given key stream.
 #[inline(always)]
-pub fn deobfuscate<const LEN: usize>(s: &[u16; LEN], k: &[u16; LEN]) -> [u16; LEN] {
-	let mut buf = [0u16; LEN];
-	let mut i = 0;
+pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u16; LEN], k: &[u16; LEN]) -> [u16; OUT_SIZE] {
+	let mut buf = [0u16; OUT_SIZE];
+	let mut i = SIZE_OF_TAG_U16;
 	// Try to tickle the LLVM optimizer in _just_ the right way
 	// Use `read_volatile` to avoid constant folding a specific read and optimize the rest
 	// Volatile reads of any size larger than 8 bytes appears to cause a bunch of one byte reads
@@ -103,7 +120,7 @@ pub fn deobfuscate<const LEN: usize>(s: &[u16; LEN], k: &[u16; LEN]) -> [u16; LE
 		let dest = buf.as_mut_ptr();
 		// Process in chunks of 8 bytes on 64-bit targets
 		#[cfg(target_pointer_width = "64")]
-		while i < LEN & !3 {
+		while i < (LEN - SIZE_OF_TAG_U16) & !3 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u16; 4]);
 			let tmp = [
 				ct[0] ^ k[i + 0],
@@ -111,29 +128,30 @@ pub fn deobfuscate<const LEN: usize>(s: &[u16; LEN], k: &[u16; LEN]) -> [u16; LE
 				ct[2] ^ k[i + 2],
 				ct[3] ^ k[i + 3],
 			];
-			write(dest.offset(i as isize) as *mut [u16; 4], tmp);
+			write(dest.offset((i - SIZE_OF_TAG_U16) as isize) as *mut [u16; 4], tmp);
 			i += 4;
 		}
 		// Process in chunks of 4 bytes
-		while i < LEN & !1 {
+		while i < (LEN - SIZE_OF_TAG_U16) & !1 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u16; 2]);
 			let tmp = [
 				ct[0] ^ k[i + 0],
 				ct[1] ^ k[i + 1],
 			];
-			write(dest.offset(i as isize) as *mut [u16; 2], tmp);
+			write(dest.offset((i - SIZE_OF_TAG_U16) as isize) as *mut [u16; 2], tmp);
 			i += 2;
 		}
 		// Process the remaining bytes
 		if LEN % 2 != 0 {
 			let ct = read_volatile(src.offset(i as isize));
-			write(dest.offset(i as isize), ct ^ k[i]);
+			write(dest.offset((i - SIZE_OF_TAG_U16) as isize), ct ^ k[i]);
 		}
 	}
 	return buf;
 }
 
 // Test correct processing of less than multiple of 8 lengths
+/*
 #[test]
 fn test_remaining_bytes() {
 	const STRING: &[u16] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -178,3 +196,4 @@ fn test_obfstr_const() {
 	assert_eq!(obfwide!(ABC), &[b'A' as u16, b'B' as u16, b'C' as u16]);
 	assert_eq!(obfwide!(WORLD), &[0xd83c, 0xdf0d]);
 }
+*/

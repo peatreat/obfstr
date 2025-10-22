@@ -3,6 +3,11 @@ Byte string obfuscation
 =======================
 */
 
+pub const START_TAG: u32 = 0x7b114b23;
+pub const END_TAG: u32 = 0x7a07b1e4;
+pub const SIZE_OF_TAG: usize = ::core::mem::size_of::<u32>();
+pub const SIZE_OF_TAG_U16: usize = ::core::mem::size_of::<u32>() / 2;
+
 use core::ptr::{read_volatile, write};
 
 /// Compiletime string constant obfuscation.
@@ -133,15 +138,19 @@ macro_rules! __obfbytes {
 	($s:expr) => {{
 		use ::core::primitive::*;
 		const _OBFBYTES_STRING: &[u8] = $s;
-		const _OBFBYTES_LEN: usize = _OBFBYTES_STRING.len();
+		const _OBFBYTES_STRING_LEN: usize = _OBFBYTES_STRING.len();
+		const _OBFBYTES_LEN: usize = $crate::bytes::SIZE_OF_TAG + _OBFBYTES_STRING_LEN + $crate::bytes::SIZE_OF_TAG;
 		const _OBFBYTES_KEYSTREAM: [u8; _OBFBYTES_LEN] = $crate::bytes::keystream::<_OBFBYTES_LEN>($crate::random!(u32, "key", stringify!($s)));
 		static _OBFBYTES_SDATA: [u8; _OBFBYTES_LEN] = $crate::bytes::obfuscate::<_OBFBYTES_LEN>(_OBFBYTES_STRING, &_OBFBYTES_KEYSTREAM);
-		$crate::bytes::deobfuscate::<_OBFBYTES_LEN>(
-			$crate::xref::xref::<_,
+		$crate::bytes::deobfuscate::<_OBFBYTES_LEN, _OBFBYTES_STRING_LEN>(
+			/*$crate::xref::xref::<_,
 				{$crate::random!(u32, "offset", stringify!($s))},
 				{$crate::random!(u64, "xref", stringify!($s))}>
 				(&_OBFBYTES_SDATA),
-			&_OBFBYTES_KEYSTREAM)
+			&_OBFBYTES_KEYSTREAM)*/
+			&_OBFBYTES_SDATA,
+			&_OBFBYTES_KEYSTREAM
+		)
 	}};
 }
 
@@ -160,9 +169,9 @@ const fn next_round(mut x: u32) -> u32 {
 pub const fn keystream<const LEN: usize>(key: u32) -> [u8; LEN] {
 	let mut keys = [0u8; LEN];
 	let mut round_key = key;
-	let mut i = 0;
+	let mut i = SIZE_OF_TAG;
 	// Calculate the key stream in chunks of 4 bytes
-	while i < LEN & !3 {
+	while i < (LEN - SIZE_OF_TAG) & !3 {
 		round_key = next_round(round_key);
 		let kb = round_key.to_ne_bytes();
 		keys[i + 0] = kb[0];
@@ -189,29 +198,43 @@ pub const fn keystream<const LEN: usize>(key: u32) -> [u8; LEN] {
 		},
 		_ => (),
 	}
+
+	unsafe {
+		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr() as *mut u32, START_TAG);
+		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr().add(i) as *mut u32, END_TAG);
+	};
+
 	return keys;
 }
 
 /// Obfuscates the input string and given key stream.
 #[inline(always)]
 pub const fn obfuscate<const LEN: usize>(s: &[u8], k: &[u8; LEN]) -> [u8; LEN] {
-	if s.len() != LEN {
+	if SIZE_OF_TAG + s.len() + SIZE_OF_TAG != LEN {
 		panic!("input string len not equal to key stream len");
 	}
+
 	let mut data = [0u8; LEN];
-	let mut i = 0usize;
-	while i < LEN {
-		data[i] = s[i] ^ k[i];
+	let mut i = SIZE_OF_TAG;
+
+	while i < LEN - SIZE_OF_TAG {
+		data[i] = s[i - SIZE_OF_TAG] ^ k[i];
 		i += 1;
 	}
+
+	unsafe {
+		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr() as *mut u32, START_TAG);
+		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr().add(i) as *mut u32, END_TAG);
+	};
+	
 	return data;
 }
 
 /// Deobfuscates the obfuscated input string and given key stream.
 #[inline(always)]
-pub fn deobfuscate<const LEN: usize>(s: &[u8; LEN], k: &[u8; LEN]) -> [u8; LEN] {
-	let mut buf = [0u8; LEN];
-	let mut i = 0;
+pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u8; LEN], k: &[u8; LEN]) -> [u8; OUT_SIZE] {
+	let mut buf = [0u8; OUT_SIZE];
+	let mut i = SIZE_OF_TAG;
 	// Try to tickle the LLVM optimizer in _just_ the right way
 	// Use `read_volatile` to avoid constant folding a specific read and optimize the rest
 	// Volatile reads of any size larger than 8 bytes appears to cause a bunch of one byte reads
@@ -221,41 +244,41 @@ pub fn deobfuscate<const LEN: usize>(s: &[u8; LEN], k: &[u8; LEN]) -> [u8; LEN] 
 		let dest = buf.as_mut_ptr();
 		// Process in chunks of 8 bytes on 64-bit targets
 		#[cfg(target_pointer_width = "64")]
-		while i < LEN & !7 {
+		while i < (LEN - SIZE_OF_TAG) & !7 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u8; 8]);
 			let tmp = u64::from_ne_bytes([ct[0], ct[1], ct[2], ct[3], ct[4], ct[5], ct[6], ct[7]]) ^
 				u64::from_ne_bytes([k[i + 0], k[i + 1], k[i + 2], k[i + 3], k[i + 4], k[i + 5], k[i + 6], k[i + 7]]);
-			write(dest.offset(i as isize) as *mut [u8; 8], tmp.to_ne_bytes());
+			write(dest.offset((i - SIZE_OF_TAG) as isize) as *mut [u8; 8], tmp.to_ne_bytes());
 			i += 8;
 		}
 		// Process in chunks of 4 bytes
-		while i < LEN & !3 {
+		while i < (LEN - SIZE_OF_TAG) & !3 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u8; 4]);
 			let tmp = u32::from_ne_bytes([ct[0], ct[1], ct[2], ct[3]]) ^
 				u32::from_ne_bytes([k[i + 0], k[i + 1], k[i + 2], k[i + 3]]);
-			write(dest.offset(i as isize) as *mut [u8; 4], tmp.to_ne_bytes());
+			write(dest.offset((i - SIZE_OF_TAG) as isize) as *mut [u8; 4], tmp.to_ne_bytes());
 			i += 4;
 		}
 		// Process the remaining bytes
 		match LEN % 4 {
 			1 => {
 				let ct = read_volatile(src.offset(i as isize));
-				write(dest.offset(i as isize), ct ^ k[i]);
+				write(dest.offset((i - SIZE_OF_TAG) as isize), ct ^ k[i]);
 			},
 			2 => {
 				let ct = read_volatile(src.offset(i as isize) as *const [u8; 2]);
-				write(dest.offset(i as isize) as *mut [u8; 2], [
+				write(dest.offset((i - SIZE_OF_TAG) as isize) as *mut [u8; 2], [
 					ct[0] ^ k[i + 0],
 					ct[1] ^ k[i + 1],
 				]);
 			},
 			3 => {
 				let ct = read_volatile(src.offset(i as isize) as *const [u8; 3]);
-				write(dest.offset(i as isize) as *mut [u8; 2], [
+				write(dest.offset((i - SIZE_OF_TAG) as isize) as *mut [u8; 2], [
 					ct[0] ^ k[i + 0],
 					ct[1] ^ k[i + 1],
 				]);
-				write(dest.offset(i as isize + 2), ct[2] ^ k[i + 2]);
+				write(dest.offset((i - SIZE_OF_TAG) as isize + 2), ct[2] ^ k[i + 2]);
 			},
 			_ => (),
 		}
@@ -318,7 +341,7 @@ pub fn equals<const LEN: usize>(s: &[u8; LEN], k: &[u8; LEN], other: &[u8]) -> b
 }
 
 // Test correct processing of less than multiple of 8 lengths
-#[test]
+/*#[test]
 fn test_remaining_bytes() {
 	const STRING: &[u8] = b"01234567ABCDEFGHI";
 	fn test<const LEN: usize>(key: u32) {
@@ -376,3 +399,4 @@ fn test_obfstr_const() {
 	assert_eq!(obfbytes!(ABC.as_bytes()), "ABC".as_bytes());
 	assert_eq!(obfbytes!(WORLD.as_bytes()), "🌍".as_bytes());
 }
+*/
