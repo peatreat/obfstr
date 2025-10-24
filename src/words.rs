@@ -121,7 +121,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u16; LEN], k: &
 		let dest = buf.as_mut_ptr();
 		// Process in chunks of 8 bytes on 64-bit targets
 		#[cfg(target_pointer_width = "64")]
-		while i < (LEN - SIZE_OF_TAG_U16) & !3 {
+		while i - SIZE_OF_TAG_U16 < (LEN - SIZE_OF_TAG_U16 * 2) & !3 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u16; 4]);
 			let tmp = [
 				ct[0] ^ k[i + 0],
@@ -133,7 +133,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u16; LEN], k: &
 			i += 4;
 		}
 		// Process in chunks of 4 bytes
-		while i < (LEN - SIZE_OF_TAG_U16) & !1 {
+		while i - SIZE_OF_TAG_U16 < (LEN - SIZE_OF_TAG_U16 * 2) & !1 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u16; 2]);
 			let tmp = [
 				ct[0] ^ k[i + 0],
@@ -143,7 +143,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u16; LEN], k: &
 			i += 2;
 		}
 		// Process the remaining bytes
-		if LEN % 2 != 0 {
+		if (LEN - SIZE_OF_TAG_U16 * 2) % 2 != 0 {
 			let ct = read_volatile(src.offset(i as isize));
 			write(dest.offset((i - SIZE_OF_TAG_U16) as isize), ct ^ k[i]);
 		}

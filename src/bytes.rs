@@ -244,7 +244,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u8; LEN], k: &[
 		let dest = buf.as_mut_ptr();
 		// Process in chunks of 8 bytes on 64-bit targets
 		#[cfg(target_pointer_width = "64")]
-		while i < (LEN - SIZE_OF_TAG) & !7 {
+		while i - SIZE_OF_TAG < (LEN - SIZE_OF_TAG * 2) & !7 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u8; 8]);
 			let tmp = u64::from_ne_bytes([ct[0], ct[1], ct[2], ct[3], ct[4], ct[5], ct[6], ct[7]]) ^
 				u64::from_ne_bytes([k[i + 0], k[i + 1], k[i + 2], k[i + 3], k[i + 4], k[i + 5], k[i + 6], k[i + 7]]);
@@ -252,7 +252,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u8; LEN], k: &[
 			i += 8;
 		}
 		// Process in chunks of 4 bytes
-		while i < (LEN - SIZE_OF_TAG) & !3 {
+		while i - SIZE_OF_TAG < (LEN - SIZE_OF_TAG * 2) & !3 {
 			let ct = read_volatile(src.offset(i as isize) as *const [u8; 4]);
 			let tmp = u32::from_ne_bytes([ct[0], ct[1], ct[2], ct[3]]) ^
 				u32::from_ne_bytes([k[i + 0], k[i + 1], k[i + 2], k[i + 3]]);
@@ -260,7 +260,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u8; LEN], k: &[
 			i += 4;
 		}
 		// Process the remaining bytes
-		match LEN % 4 {
+		match (LEN - SIZE_OF_TAG * 2) % 4 {
 			1 => {
 				let ct = read_volatile(src.offset(i as isize));
 				write(dest.offset((i - SIZE_OF_TAG) as isize), ct ^ k[i]);
@@ -286,6 +286,7 @@ pub fn deobfuscate<const LEN: usize, const OUT_SIZE: usize>(s: &[u8; LEN], k: &[
 	return buf;
 }
 
+/*
 #[inline(always)]
 pub fn equals<const LEN: usize>(s: &[u8; LEN], k: &[u8; LEN], other: &[u8]) -> bool {
 	if other.len() != LEN {
@@ -338,7 +339,7 @@ pub fn equals<const LEN: usize>(s: &[u8; LEN], k: &[u8; LEN], other: &[u8]) -> b
 			_ => true,
 		}
 	}
-}
+}*/
 
 // Test correct processing of less than multiple of 8 lengths
 /*#[test]
