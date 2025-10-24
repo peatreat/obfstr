@@ -64,7 +64,7 @@ pub const fn keystream<const LEN: usize>(key: u32) -> [u16; LEN] {
 	let mut round_key = key;
 	let mut i = SIZE_OF_TAG_U16;
 	// Calculate the key stream in chunks of 4 bytes
-	while i < (LEN - SIZE_OF_TAG_U16) & !1 {
+	while (i - SIZE_OF_TAG_U16) < (LEN - SIZE_OF_TAG_U16 * 2) & !1 {
 		round_key = next_round(round_key);
 		let kb = round_key.to_ne_bytes();
 		keys[i + 0] = u16::from_ne_bytes([kb[0], kb[1]]);
@@ -72,14 +72,14 @@ pub const fn keystream<const LEN: usize>(key: u32) -> [u16; LEN] {
 		i += 2;
 	}
 	// Calculate the remaining words of the key stream
-	if LEN % 2 != 0 {
+	if (LEN - SIZE_OF_TAG_U16 * 2) % 2 != 0 {
 		round_key = next_round(round_key);
 		keys[i] = round_key as u16;
 	}
 
 	unsafe {
 		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr() as *mut u32, START_TAG);
-		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr().add(i) as *mut u32, END_TAG);
+		::core::ptr::write_unaligned::<u32>(keys.as_mut_ptr().add(LEN - SIZE_OF_TAG_U16) as *mut u32, END_TAG);
 	};
 
 	return keys;
@@ -101,7 +101,7 @@ pub const fn obfuscate<const LEN: usize>(s: &[u16], k: &[u16; LEN]) -> [u16; LEN
 
 	unsafe {
 		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr() as *mut u32, START_TAG);
-		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr().add(i) as *mut u32, END_TAG);
+		::core::ptr::write_unaligned::<u32>(data.as_mut_ptr().add(LEN - SIZE_OF_TAG_U16) as *mut u32, END_TAG);
 	};
 
 	return data;
